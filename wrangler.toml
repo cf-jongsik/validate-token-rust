@@ -1,0 +1,6 @@
+name = "validate-token-rust"
+main = "build/worker/shim.mjs"
+compatibility_date = "2025-08-26"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
