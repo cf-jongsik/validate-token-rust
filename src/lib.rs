@@ -3,53 +3,45 @@ use hmac::{Hmac, Mac};
 use js_sys::Date;
 use sha2::Sha256;
 use url::Url;
+use urlencoding;
 use wasm_bindgen::JsValue;
 use worker::*;
 
 const DEFAULT_HMAC_SECRET: &str = "default-secret";
-const TOKEN_VALIDITY_SECONDS: f64 = 300000.0;
+const TOKEN_VALIDITY_SECONDS: f64 = 300.0;
 
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
 
-    let secret = env
+    let secret: String = env
         .secret("HMAC_SECRET")
-        .ok()
         .map(|v| v.to_string())
-        .unwrap_or_else(|| DEFAULT_HMAC_SECRET.to_string());
+        .unwrap_or_else(|_| DEFAULT_HMAC_SECRET.to_string());
 
-    if secret.is_empty() {
-        console_error!("missing secret");
-        return Ok(Response::from_html("missing secret")?.with_status(400));
+    // Parse URL once
+    let url_str = req.url()?;
+    let url = Url::parse(&url_str.to_string())?;
+
+    let (is_login_function, oait_param_opt, retained_pairs): (
+        bool,
+        Option<String>,
+        Vec<(String, String)>,
+    ) = get_url_query(url.query());
+
+    if !is_login_function {
+        console_error!("missing function_id - bypassing HMAC validation");
+        return Fetch::Request(req).send().await;
     }
 
-    let url = Url::parse(&req.url()?.to_string())?;
-    let mut query_pairs: std::collections::HashMap<String, String> = url
-        .query()
-        .unwrap_or_default()
-        .split('&')
-        .map(|pair| {
-            let (key, value) = pair.split_once('=').unwrap();
-            (key.to_string(), value.to_string())
-        })
-        .collect();
-    match query_pairs.get("function_id") {
-        Some(id) if id == "APPS_LOGIN_DEFAULT" => {}
-        Some(_) => {
-            console_error!("Not a login request - bypassing HMAC validation");
-            return Fetch::Request(req).send().await;
-        }
+    let oait_param: String = match oait_param_opt {
+        Some(v) => v,
         None => {
-            console_error!("missing function_id - bypassing HMAC validation");
-            return Fetch::Request(req).send().await;
+            console_error!("Missing oait parameter");
+            return Ok(Response::from_html("Missing oait parameter")?.with_status(400));
         }
-    }
-    let oait_param = query_pairs.get("oait").ok_or_else(|| "")?.to_string();
-    if oait_param.is_empty() {
-        console_error!("Missing oait parameter");
-        return Ok(Response::from_html("Missing oait parameter")?.with_status(400));
-    }
+    };
+
     let tokens: Vec<&str> = oait_param.split("++").collect();
     if tokens.len() < 2 {
         console_error!("Invalid token format-oaitParam: {}", oait_param);
@@ -57,7 +49,10 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     }
 
     let forms_token = tokens[0];
-    let cloudflare_token = tokens[1].trim();
+    let cloudflare_token = urlencoding::decode(tokens[1].trim()).map_err(|e| {
+        console_error!("Failed to decode token: {}", e);
+        Error::RustError("Invalid token encoding".into())
+    })?;
     let access_token = tokens.get(2).unwrap_or(&"");
 
     let client_ip = extract_client_ip(&req);
@@ -71,32 +66,32 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
     let token_validity_seconds = env
         .var("TOKEN_VALIDITY_SECONDS")
-        .ok()
-        .and_then(|v| v.to_string().parse().ok())
-        .unwrap_or(TOKEN_VALIDITY_SECONDS);
+        .map(|value| value.to_string().parse::<f64>().unwrap())
+        .unwrap_or_else(|_v| TOKEN_VALIDITY_SECONDS);
 
     if !verify_hmac_token(
         &client_ip,
-        cloudflare_token,
+        &cloudflare_token,
         &secret,
         token_validity_seconds,
     ) {
         return Ok(Response::from_html("Invalid or expired token")?.with_status(403));
     }
 
-    let mut new_url = Url::from(url);
+    // Rebuild URL: start from parsed url, clear query and append retained pairs (avoids reparsing original string)
+    let mut new_url = Url::parse(&url_str.to_string())?;
     new_url.query_pairs_mut().clear();
-    query_pairs.remove("oait");
-    for (key, value) in query_pairs {
-        new_url.query_pairs_mut().append_pair(&key, &value);
+    for (k, v) in retained_pairs {
+        new_url.query_pairs_mut().append_pair(&k, &v);
     }
     if !forms_token.is_empty() {
-        new_url.query_pairs_mut().append_pair("oait", forms_token);
+        new_url.query_pairs_mut().append_pair("oait", &forms_token);
     }
 
     let mut request_init = RequestInit::new();
     request_init.with_method(req.method());
     request_init.with_headers(req.headers().clone());
+    // clone only to read body if necessary (keeps original `req` available for headers/method)
     let body = req.clone()?.bytes().await?;
     if !body.is_empty() {
         request_init.with_body(Some(JsValue::from(body)));
@@ -140,6 +135,33 @@ fn extract_client_ip(req: &Request) -> String {
         })
 }
 
+fn get_url_query(query: Option<&str>) -> (bool, Option<String>, Vec<(String, String)>) {
+    let Some(query) = query else {
+        return (false, None, Vec::new());
+    };
+
+    let mut is_login = false;
+    let mut oait = None;
+
+    let retained_pairs: Vec<_> = query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .filter_map(|(k, v)| match k {
+            "function_id" => {
+                is_login = v == "APPS_LOGIN_DEFAULT";
+                None
+            }
+            "oait" => {
+                oait = Some(v.to_string());
+                None
+            }
+            _ => Some((k.to_string(), v.to_string())),
+        })
+        .collect();
+
+    (is_login, oait, retained_pairs)
+}
+
 fn verify_hmac_token(
     client_ip: &str,
     provided_token: &str,
@@ -162,7 +184,6 @@ fn verify_hmac_token(
     if current_time - timestamp > validity_seconds {
         return false;
     }
-
     let expected_hash = generate_hash(client_ip, secret, timestamp);
     constant_time_compare(&expected_hash, provided_hash)
 }

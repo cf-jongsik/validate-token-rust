@@ -28,7 +28,7 @@ The worker intercepts incoming requests and:
 | Variable                 | Description                      | Default            |
 | ------------------------ | -------------------------------- | ------------------ |
 | `HMAC_SECRET`            | Secret key for HMAC validation   | `"default-secret"` |
-| `TOKEN_VALIDITY_SECONDS` | Token validity period in seconds | `300000`           |
+| `TOKEN_VALIDITY_SECONDS` | Token validity period in seconds | `300`              |
 
 ### Wrangler Configuration
 
@@ -103,9 +103,56 @@ worker-build --release
 
 ### Testing
 
+The project includes a comprehensive test suite in `test.sh` that validates the worker's functionality.
+
+#### Running Tests
+
+1. Start the worker locally:
+
+```bash
+pnpm dlx wrangler dev
+```
+
+2. Run the test suite:
+
 ```bash
 ./test.sh
 ```
+
+#### Test Script Options
+
+```bash
+./test.sh [options]
+
+Options:
+  -v, --verbose       Show detailed response output
+  -h, --host HOST     Set host header (default: reflector.cloudflareapp.cc)
+  -p, --port PORT     Set port (default: 8787)
+  -s, --secret KEY    Set HMAC secret (default: default-secret)
+  --help              Show help message
+```
+
+#### Environment Variables
+
+You can also configure the test script using environment variables:
+
+```bash
+HOST=myhost.example.com PORT=3000 SECRET=mysecret ./test.sh
+```
+
+#### Test Coverage
+
+The test suite includes 12 test cases covering:
+
+- **Bypass scenarios**: Missing or non-login function_id
+- **Error handling**: Missing oait, invalid token formats, expired tokens
+- **Valid requests**: Proper token validation with various configurations
+- **Header support**: CF-Connecting-IP and X-Forwarded-For headers
+- **Additional features**: Access token handling, query parameter preservation
+
+Each test provides colored output indicating success (✓) or failure (✗), with a final summary showing total tests run, passed, and failed.
+
+**Note:** The test script uses a default token validity of 300 seconds (5 minutes) for testing purposes, while the worker defaults to 300 seconds (5 minutes) in production.
 
 ### Deployment
 
@@ -163,17 +210,21 @@ fn generate_token(client_ip: &str, secret: &str, timestamp: f64) -> String {
 
 ## Error Handling
 
-The worker returns appropriate HTTP status codes:
+The worker returns the following HTTP status codes for different error scenarios:
 
 - `400 Bad Request`: Missing secret or invalid parameters
+- `401 Unauthorized`: Invalid or missing `oait` parameter
 - `403 Forbidden`: Invalid or expired tokens
+- `500 Internal Server Error`: Unexpected errors during token validation or request forwarding
 - Forwards original response for valid requests
 
 ## Dependencies
 
-- `worker`: Cloudflare Workers runtime
-- `hmac`: HMAC implementation
-- `sha2`: SHA-256 hashing
-- `base64`: Base64 encoding/decoding
-- `url`: URL parsing and manipulation
-- `js-sys`: JavaScript interop for timestamps
+- `worker` (v0.0.18+): Cloudflare Workers runtime
+- `hmac` (v0.12+): HMAC implementation
+- `sha2` (v0.10+): SHA-256 hashing
+- `base64` (v0.21+): Base64 encoding/decoding
+- `url` (v2.4+): URL parsing and manipulation
+- `urlencoding` (v2.1+): URL encoding/decoding
+- `js-sys` (v0.3+): JavaScript interop for timestamps
+- `wasm-bindgen` (v0.2+): WebAssembly bindings
