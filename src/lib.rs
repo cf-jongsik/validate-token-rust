@@ -17,10 +17,10 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let secret: String = env
         .secret("HMAC_SECRET")
         .map(|v| v.to_string())
-        .unwrap_or_else(|_| DEFAULT_HMAC_SECRET.to_string());
+        .unwrap_or(DEFAULT_HMAC_SECRET.to_string());
 
     // Parse URL once
-    let url_str = req.url()?;
+    let url_str = req.url().expect("URL not provided");
     let url = Url::parse(&url_str.to_string())?;
 
     let (is_login_function, oait_param_opt, retained_pairs): (
@@ -55,7 +55,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     })?;
     let access_token = tokens.get(2).unwrap_or(&"");
 
-    let client_ip = extract_client_ip(&req);
+    let client_ip = extract_client_ip(&req.headers());
     console_log!(
         "formsToken:{}, clientIP:{}, providedToken:{}, accessToken:{}",
         forms_token,
@@ -67,7 +67,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let token_validity_seconds = env
         .var("TOKEN_VALIDITY_SECONDS")
         .map(|value| value.to_string().parse::<f64>().unwrap())
-        .unwrap_or_else(|_v| TOKEN_VALIDITY_SECONDS);
+        .unwrap_or(TOKEN_VALIDITY_SECONDS);
 
     if !verify_hmac_token(
         &client_ip,
@@ -117,13 +117,13 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .with_status(new_response.status_code()))
 }
 
-fn extract_client_ip(req: &Request) -> String {
-    req.headers()
+fn extract_client_ip(headers: &Headers) -> String {
+    headers
         .get("CF-Connecting-IP")
         .ok()
         .flatten()
         .or_else(|| {
-            req.headers()
+            headers
                 .get("X-Forwarded-For")
                 .ok()
                 .flatten()

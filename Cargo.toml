@@ -15,7 +15,7 @@ worker = { version = "0.6" }
 worker-macros = { version = "0.6" }
 console_error_panic_hook = { version = "0.1.7" }
 url = "2.5.7"
-js-sys = "0.3.77"
+js-sys = "0.3.78"
 hmac = "0.12.1"
 sha2 = "0.10.9"
 base64 = "0.22.1"
